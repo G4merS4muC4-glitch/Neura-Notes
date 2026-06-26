@@ -4,6 +4,7 @@ import { LocalRepository } from './localRepo'
 import { getSupabase } from './supabase'
 
 const TABLE = 'notes'
+const OWNER_KEY = 'neural-cache-owner'
 
 type Row = {
   id: string
@@ -30,48 +31,75 @@ function toNote(r: Row): Note {
 
 /**
  * Backend de nuvem (Supabase) com cache local offline-first (write-through).
- * Conflito resolvido por last-write-wins (updatedAt).
- *
- * Esquema esperado (ver README):
- *   create table notes (
- *     id uuid primary key, user_id uuid references auth.users,
- *     title text, content text, links jsonb default '[]',
- *     created_at bigint, updated_at bigint, deleted boolean default false
- *   );
+ * O cache é escopado por usuário: ao trocar de conta o cache é zerado, então
+ * uma conta nunca vê as notas de outra no mesmo navegador. As notas criadas
+ * antes do primeiro login são "adotadas" pela conta que logar.
+ * Conflito resolvido por last-write-wins (updatedAt). Esquema: ver README.
  */
 export class SupabaseRepository implements Repository {
   readonly kind = 'supabase' as const
   private cache = new LocalRepository()
   private listeners = new Set<(notes: Note[]) => void>()
   private userId: string | null = null
+  private ownerId: string | null = null // de quem é o cache atual
 
   async init() {
     await this.cache.init()
     const sb = getSupabase()
-    const { data } = await sb.auth.getUser()
-    this.userId = data.user?.id ?? null
+    this.ownerId = localStorage.getItem(OWNER_KEY)
 
-    sb.auth.onAuthStateChange(async (_e, session) => {
-      this.userId = session?.user?.id ?? null
-      if (this.userId) await this.pull()
+    const { data } = await sb.auth.getUser()
+    await this.applyUser(data.user?.id ?? null)
+
+    sb.auth.onAuthStateChange((_e, session) => {
+      void this.applyUser(session?.user?.id ?? null)
     })
 
-    if (this.userId) {
-      await this.pull()
-      sb.channel('public:notes')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: TABLE },
-          async () => {
-            await this.pull()
-            this.emit()
-          },
-        )
-        .subscribe()
-    }
+    // Realtime: o RLS já filtra por usuário no servidor
+    sb.channel('public:notes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: TABLE }, async () => {
+        if (this.userId) {
+          await this.pull()
+          this.emit()
+        }
+      })
+      .subscribe()
   }
 
-  /** Puxa do remoto e mescla no cache local por last-write-wins. */
+  /** Reage a login/logout/troca de conta, mantendo o cache isolado. */
+  private async applyUser(uid: string | null) {
+    if (uid === this.userId) return
+    this.userId = uid
+
+    if (!uid) {
+      // logout: limpa o cache da conta anterior
+      await this.cache.clear()
+      this.ownerId = null
+      localStorage.removeItem(OWNER_KEY)
+      this.emit()
+      return
+    }
+
+    if (uid !== this.ownerId) {
+      if (this.ownerId === null) {
+        // primeiro login neste navegador: adota as notas locais pré-login
+        const local = await this.cache.getAll()
+        this.ownerId = uid
+        localStorage.setItem(OWNER_KEY, uid)
+        for (const n of local) await this.upsertRemote(n)
+      } else {
+        // outra conta: zera o cache para não vazar notas entre contas
+        await this.cache.clear()
+        this.ownerId = uid
+        localStorage.setItem(OWNER_KEY, uid)
+      }
+    }
+
+    await this.pull()
+    this.emit()
+  }
+
+  /** Puxa do remoto e mescla no cache (last-write-wins). */
   private async pull() {
     if (!this.userId) return
     const sb = getSupabase()
@@ -80,10 +108,26 @@ export class SupabaseRepository implements Repository {
     for (const row of data as Row[]) {
       const remote = toNote(row)
       const local = await this.cache.get(remote.id)
-      if (!local || remote.updatedAt >= local.updatedAt) {
-        await this.cache.put(remote)
-      }
+      if (!local || remote.updatedAt >= local.updatedAt) await this.cache.put(remote)
     }
+  }
+
+  private async upsertRemote(note: Note) {
+    if (!this.userId) return
+    const sb = getSupabase()
+    const row: Partial<Row> = {
+      id: note.id,
+      user_id: this.userId,
+      title: note.title,
+      content: note.content,
+      links: note.links,
+      created_at: note.createdAt,
+      updated_at: note.updatedAt,
+      deleted: Boolean(note.deleted),
+    }
+    await sb.from(TABLE).upsert(row).then(undefined, () => {
+      /* offline: fica no cache até a próxima sincronização */
+    })
   }
 
   private emit() {
@@ -99,28 +143,14 @@ export class SupabaseRepository implements Repository {
   }
 
   async put(note: Note): Promise<void> {
-    await this.cache.put(note) // write local primeiro (offline-first)
-    if (!this.userId) return
-    const sb = getSupabase()
-    const row: Partial<Row> = {
-      id: note.id,
-      user_id: this.userId,
-      title: note.title,
-      content: note.content,
-      links: note.links,
-      created_at: note.createdAt,
-      updated_at: note.updatedAt,
-      deleted: Boolean(note.deleted),
-    }
-    await sb.from(TABLE).upsert(row).then(undefined, () => {
-      /* offline: ficará no cache até a próxima sincronização */
-    })
+    await this.cache.put(note) // local primeiro (offline-first)
+    await this.upsertRemote(note)
   }
 
   async remove(id: string): Promise<void> {
     await this.cache.remove(id)
     const note = await this.cache.get(id)
-    if (note) await this.put({ ...note, deleted: true, updatedAt: Date.now() })
+    if (note) await this.upsertRemote(note)
   }
 
   subscribe(cb: (notes: Note[]) => void): () => void {

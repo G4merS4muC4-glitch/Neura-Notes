@@ -3,7 +3,9 @@ import { Routes, Route, useLocation } from 'react-router-dom'
 import { AnimatePresence, motion, MotionConfig } from 'framer-motion'
 import { NotesProvider } from '@/store/NotesContext'
 import { PrefsProvider } from '@/store/PrefsContext'
+import { AuthProvider, useAuth } from '@/store/AuthContext'
 import GraphPage from '@/pages/GraphPage'
+import AuthPage from '@/pages/AuthPage'
 import { pageVariants } from '@/lib/motion'
 
 // Rotas pesadas carregadas sob demanda (CodeMirror, Supabase ficam fora
@@ -52,13 +54,39 @@ function AnimatedRoutes() {
   )
 }
 
+/** Bloqueia o app até logar (quando há Supabase configurado). */
+function Gate() {
+  const { configured, loading, user } = useAuth()
+
+  if (configured && loading) {
+    return (
+      <div className="absolute inset-0 grid place-items-center bg-bg-base">
+        <motion.div
+          animate={{ scale: [1, 1.15, 1], opacity: [0.5, 1, 0.5] }}
+          transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
+          className="h-10 w-10 rounded-full"
+          style={{ background: 'var(--accent)', boxShadow: '0 0 30px var(--accent-glow)' }}
+        />
+      </div>
+    )
+  }
+
+  if (configured && !user) return <AuthPage />
+
+  return (
+    <NotesProvider>
+      <AnimatedRoutes />
+    </NotesProvider>
+  )
+}
+
 export default function App() {
   return (
     <MotionConfig reducedMotion="user">
       <PrefsProvider>
-        <NotesProvider>
-          <AnimatedRoutes />
-        </NotesProvider>
+        <AuthProvider>
+          <Gate />
+        </AuthProvider>
       </PrefsProvider>
     </MotionConfig>
   )

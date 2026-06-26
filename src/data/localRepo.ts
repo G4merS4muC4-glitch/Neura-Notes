@@ -61,6 +61,11 @@ export class LocalRepository implements Repository {
     this.channel?.postMessage({ type: 'remove', id })
   }
 
+  /** Apaga todo o cache local (usado ao trocar de conta). */
+  async clear(): Promise<void> {
+    await this.database.clear(STORE)
+  }
+
   subscribe(cb: (notes: Note[]) => void): () => void {
     this.listeners.add(cb)
     return () => this.listeners.delete(cb)

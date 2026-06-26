@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { motion } from 'framer-motion'
-import { Cloud, HardDrive, Github, Info, Sparkles, LogOut, Mail, Tag } from 'lucide-react'
+import { Cloud, HardDrive, Github, Info, Sparkles, LogOut, Tag } from 'lucide-react'
 import { useNotes } from '@/store/NotesContext'
 import { usePrefs, TAG_PALETTE } from '@/store/PrefsContext'
+import { useAuth } from '@/store/AuthContext'
 import { parseTags } from '@/lib/markdown'
-import { isSupabaseConfigured } from '@/data/env'
-import { getSupabase } from '@/data/supabase'
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -25,13 +24,9 @@ function Row({ children }: { children: React.ReactNode }) {
 }
 
 export default function Settings() {
-  const { notes, graph, backend } = useNotes()
+  const { notes, graph } = useNotes()
   const { colorForTag, setTagColor } = usePrefs()
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
-  const [user, setUser] = useState<string | null>(null)
-
-  const cloud = backend === 'supabase'
+  const { configured, user, signOut } = useAuth()
 
   // Todas as #tags encontradas nas notas (forma exibida, sem repetir)
   const allTags = useMemo(() => {
@@ -49,34 +44,6 @@ export default function Settings() {
     return out.sort((a, b) => a.localeCompare(b, 'pt-BR'))
   }, [notes])
 
-  useEffect(() => {
-    if (!cloud) return
-    getSupabase()
-      .auth.getUser()
-      .then(({ data }) => setUser(data.user?.email ?? null))
-      .catch(() => {})
-  }, [cloud])
-
-  const sendMagicLink = async () => {
-    try {
-      await getSupabase().auth.signInWithOtp({ email })
-      setSent(true)
-    } catch {
-      setSent(false)
-    }
-  }
-  const google = async () => {
-    try {
-      await getSupabase().auth.signInWithOAuth({ provider: 'google' })
-    } catch {
-      /* noop */
-    }
-  }
-  const signOut = async () => {
-    await getSupabase().auth.signOut()
-    setUser(null)
-  }
-
   return (
     <motion.div
       initial={{ opacity: 0, y: 10 }}
@@ -87,67 +54,33 @@ export default function Settings() {
       <Section title="Conta e sincronização">
         <Row>
           <span className="grid h-9 w-9 place-items-center rounded-pill bg-bg-elevated text-accent">
-            {cloud ? <Cloud size={18} /> : <HardDrive size={18} />}
+            {configured ? <Cloud size={18} /> : <HardDrive size={18} />}
           </span>
-          <div className="flex-1">
+          <div className="min-w-0 flex-1">
             <div className="font-medium text-text-primary">
-              {cloud ? 'Nuvem (Supabase)' : 'Local (este aparelho)'}
+              {configured ? 'Nuvem (Supabase)' : 'Local (este aparelho)'}
             </div>
-            <div className="text-sm text-text-secondary">
-              {cloud
+            <div className="truncate text-sm text-text-secondary">
+              {configured
                 ? user
-                  ? `Conectado como ${user}`
-                  : 'Entre para sincronizar suas notas.'
+                  ? `Conectado como ${user.email}`
+                  : 'Não conectado.'
                 : 'Suas notas ficam salvas offline neste navegador.'}
             </div>
           </div>
         </Row>
 
-        {cloud && !user && (
-          <Row>
-            <div className="flex w-full flex-col gap-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="seu@email.com"
-                  className="flex-1 rounded-sm border border-[var(--border)] bg-bg-base px-3 py-2 text-text-primary outline-none focus:border-accent-soft"
-                />
-                <button
-                  type="button"
-                  onClick={sendMagicLink}
-                  className="inline-flex items-center gap-1.5 rounded-sm bg-[var(--brand-gradient)] px-3 py-2 font-medium text-bg-base"
-                  style={{ background: 'var(--brand-gradient)' }}
-                >
-                  <Mail size={16} /> Link mágico
-                </button>
-              </div>
-              {sent && <p className="text-sm text-accent">Enviamos um link para seu e-mail ✨</p>}
-              <button
-                type="button"
-                onClick={google}
-                className="rounded-sm border border-[var(--border-strong)] px-3 py-2 text-text-primary hover:bg-bg-hover"
-              >
-                Entrar com Google
-              </button>
-            </div>
-          </Row>
+        {configured && user && (
+          <button
+            type="button"
+            onClick={() => signOut()}
+            className="flex w-full items-center gap-2 p-4 font-medium text-danger hover:bg-bg-hover"
+          >
+            <LogOut size={18} /> Sair da conta
+          </button>
         )}
 
-        {cloud && user && (
-          <Row>
-            <button
-              type="button"
-              onClick={signOut}
-              className="inline-flex items-center gap-2 text-danger hover:opacity-80"
-            >
-              <LogOut size={18} /> Sair
-            </button>
-          </Row>
-        )}
-
-        {!cloud && !isSupabaseConfigured() && (
+        {!configured && (
           <Row>
             <p className="text-sm text-text-secondary">
               Para ativar o sync em nuvem, configure <code className="text-accent">VITE_SUPABASE_URL</code> e{' '}
