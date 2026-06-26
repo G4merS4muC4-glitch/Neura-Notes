@@ -105,17 +105,24 @@ export function wikilinkCompletion(opts: {
         userEvent: 'input',
       })
     }
-    const options: Completion[] = opts.getTitles().map((title) => ({
+    // getTitles() já vem ordenado por uso (mais recente primeiro). O boost
+    // decrescente faz a lista do autocomplete seguir essa ordem (último usado
+    // no topo) em vez da ordem alfabética padrão do CodeMirror.
+    const titles = opts.getTitles()
+    const n = titles.length
+    const options: Completion[] = titles.map((title, i) => ({
       label: title,
       type: 'class',
+      boost: Math.max(-50, n - i), // recente = boost maior = aparece antes
       apply: insertLink(title),
     }))
-    const exact = opts.getTitles().some((t) => t.trim().toLowerCase() === typed.trim().toLowerCase())
+    const exact = titles.some((t) => t.trim().toLowerCase() === typed.trim().toLowerCase())
     if (typed.trim() && !exact) {
       const title = typed.trim()
-      options.unshift({
+      options.push({
         label: `＋ Criar nota: “${title}”`,
         type: 'keyword',
+        boost: -99, // "criar nova" fica por último
         apply: (view, _c, from, to) => {
           insertLink(title)(view, _c, from, to)
           opts.onCreate(title)

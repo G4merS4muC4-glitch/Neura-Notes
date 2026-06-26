@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Plus, List, Settings as SettingsIcon, Sparkles, Orbit } from 'lucide-react'
@@ -17,8 +17,15 @@ export default function GraphPage() {
   const { graph, notes, loading, createNote } = useNotes()
   const { tagColors, graph3d, setGraph3d } = usePrefs()
   const [query, setQuery] = useState('')
+  const [showHint, setShowHint] = useState(true)
 
   const empty = !loading && notes.length === 0
+
+  // a dica de uso some sozinha depois de alguns segundos
+  useEffect(() => {
+    const t = setTimeout(() => setShowHint(false), 5000)
+    return () => clearTimeout(t)
+  }, [graph3d])
 
   const handleNew = async () => {
     haptic(12)
@@ -134,22 +141,29 @@ export default function GraphPage() {
         </div>
       )}
 
-      {/* Dica de uso, discreta */}
-      {!empty && !loading && notes.length > 0 && (
-        <div
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 flex justify-center pb-6"
-          style={{ paddingBottom: 'calc(env(safe-area-inset-bottom, 0px) + 24px)' }}
-        >
-          <span
-            className="rounded-pill px-3 py-1 text-xs text-text-muted backdrop-blur-md"
-            style={{ background: 'rgba(29,38,44,0.7)' }}
+      {/* Dica de uso, discreta — acima do FAB e some sozinha */}
+      <AnimatePresence>
+        {!empty && !loading && notes.length > 0 && showHint && (
+          <motion.div
+            key={graph3d ? '3d' : '2d'}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 8 }}
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+            className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4"
+            style={{ bottom: 'calc(env(safe-area-inset-bottom, 0px) + 104px)' }}
           >
-            {graph3d
-              ? 'Arraste para girar · scroll para zoom · clique num nó para abrir'
-              : 'Toque num nó para abrir · segure e arraste para mover'}
-          </span>
-        </div>
-      )}
+            <span
+              className="max-w-[80%] truncate rounded-pill px-3 py-1 text-center text-xs text-text-muted backdrop-blur-md"
+              style={{ background: 'rgba(29,38,44,0.7)' }}
+            >
+              {graph3d
+                ? 'Arraste para girar · scroll para zoom · clique num nó para abrir'
+                : 'Toque num nó para abrir · segure e arraste para mover'}
+            </span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* FAB criar nota */}
       <motion.button

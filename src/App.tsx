@@ -83,11 +83,11 @@ function Gate() {
 export default function App() {
   return (
     <MotionConfig reducedMotion="user">
-      <PrefsProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <PrefsProvider>
           <Gate />
-        </AuthProvider>
-      </PrefsProvider>
+        </PrefsProvider>
+      </AuthProvider>
     </MotionConfig>
   )
 }

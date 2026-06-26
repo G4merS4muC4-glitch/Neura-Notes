@@ -1,5 +1,15 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import { normalizeTag } from '@/lib/markdown'
+import { useAuth } from '@/store/AuthContext'
+import { getSupabase } from '@/data/supabase'
 
 /** Paleta candy para colorir tipos (tags). */
 export const TAG_PALETTE: { name: string; hex: string }[] = [
@@ -17,10 +27,8 @@ type TagColors = Record<string, string> // chave = tag normalizada
 
 type PrefsValue = {
   tagColors: TagColors
-  /** Cor de uma tag (aceita "#tag" ou "tag"). */
   colorForTag: (tag: string) => string | undefined
   setTagColor: (tag: string, hex: string | null) => void
-  /** Grafo em 3D (true) ou 2D (false). */
   graph3d: boolean
   setGraph3d: (v: boolean) => void
 }
@@ -40,32 +48,82 @@ function loadAll(): { tagColors: TagColors; graph3d: boolean } {
 }
 
 export function PrefsProvider({ children }: { children: ReactNode }) {
+  const { configured, user } = useAuth()
   const initial = loadAll()
   const [tagColors, setTagColors] = useState<TagColors>(initial.tagColors)
   const [graph3d, setGraph3d] = useState<boolean>(initial.graph3d)
+  const tagColorsRef = useRef(tagColors)
+  tagColorsRef.current = tagColors
 
+  // cache local (offline + preferências de view ficam sempre por aqui)
   useEffect(() => {
     try {
       localStorage.setItem(KEY, JSON.stringify({ tagColors, graph3d }))
     } catch {
-      /* armazenamento indisponível — segue sem persistir */
+      /* armazenamento indisponível */
     }
   }, [tagColors, graph3d])
 
-  const colorForTag = useCallback(
-    (tag: string) => tagColors[normalizeTag(tag)],
-    [tagColors],
-  )
+  // sincroniza as cores das tags por conta (Supabase)
+  useEffect(() => {
+    if (!configured || !user) return
+    const sb = getSupabase()
+    let alive = true
 
-  const setTagColor = useCallback((tag: string, hex: string | null) => {
-    const key = normalizeTag(tag)
-    setTagColors((prev) => {
-      const next = { ...prev }
-      if (hex) next[key] = hex
-      else delete next[key]
-      return next
-    })
-  }, [])
+    sb.from('prefs')
+      .select('tag_colors')
+      .eq('user_id', user.id)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!alive || error) return
+        if (data?.tag_colors) {
+          setTagColors(data.tag_colors as TagColors) // remoto manda
+        } else {
+          // primeira vez nesta conta: adota as cores locais atuais
+          void sb
+            .from('prefs')
+            .upsert({ user_id: user.id, tag_colors: tagColorsRef.current, updated_at: Date.now() })
+        }
+      })
+
+    // ao vivo entre dispositivos
+    const channel = sb
+      .channel(`prefs:${user.id}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'prefs', filter: `user_id=eq.${user.id}` },
+        (payload) => {
+          const tc = (payload.new as { tag_colors?: TagColors } | null)?.tag_colors
+          if (tc) setTagColors(tc)
+        },
+      )
+      .subscribe()
+
+    return () => {
+      alive = false
+      sb.removeChannel(channel)
+    }
+  }, [configured, user])
+
+  const colorForTag = useCallback((tag: string) => tagColors[normalizeTag(tag)], [tagColors])
+
+  const setTagColor = useCallback(
+    (tag: string, hex: string | null) => {
+      const key = normalizeTag(tag)
+      setTagColors((prev) => {
+        const next = { ...prev }
+        if (hex) next[key] = hex
+        else delete next[key]
+        if (configured && user) {
+          void getSupabase()
+            .from('prefs')
+            .upsert({ user_id: user.id, tag_colors: next, updated_at: Date.now() })
+        }
+        return next
+      })
+    },
+    [configured, user],
+  )
 
   return (
     <PrefsContext.Provider value={{ tagColors, colorForTag, setTagColor, graph3d, setGraph3d }}>
